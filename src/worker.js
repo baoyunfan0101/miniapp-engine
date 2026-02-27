@@ -9,8 +9,7 @@ const moduleCache = new Map();
 async function loadModule(specifier, referrer) {
   const url = new URL(specifier, referrer).href;
 
-  if (moduleCache.has(url))
-    return moduleCache.get(url);
+  if (moduleCache.has(url)) return moduleCache.get(url);
 
   const p = import(url);
 
@@ -39,11 +38,21 @@ function createRuntime() {
     render() {
       const tree = {
         type: "view",
+        props: { class: "root" },
         children: [
-          { type: "text", value: `count = ${runtime.data.count}` },
-          { type: "button", event: "inc", text: "++" },
+          {
+            type: "text",
+            value: `count = ${runtime.data.count}`,
+          },
+          {
+            type: "button",
+            props: { class: "btn" },
+            event: "inc",
+            text: "++",
+          },
         ],
       };
+
       postMessage({ type: "RENDER", tree });
     },
   };
@@ -52,8 +61,8 @@ function createRuntime() {
 }
 
 /* Error reporter */
+// phase: "LOAD_FAIL" | "RUN_FAIL"
 function reportError(err, phase) {
-  // phase: "LOAD_FAIL" | "RUN_FAIL" 
   const message = (err && err.message) ? `[${phase}] ${err.message}` : `[${phase}] ${String(err)}`;
 
   postMessage({
