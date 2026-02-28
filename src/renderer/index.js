@@ -1,8 +1,21 @@
 // src/renderer/index.js
+// vDOM -> DOM
+
+import { MSG } from "../shared/protocol.js";
+
+function assertVnode(v) {
+  if (!v || typeof v !== "object") throw new Error("Invalid vnode: not an object");
+  if (!v.type) throw new Error("Invalid vnode: missing type");
+  if (v.type === "view" && v.children && !Array.isArray(v.children)) {
+    throw new Error("Invalid vnode: view.children must be array");
+  }
+}
 
 let prevTree = null;
 
 export function render(tree, root, worker) {
+  assertVnode(tree);
+
   if (!prevTree) {
     // initial render: tree -> DOM
     root.innerHTML = "";
@@ -49,7 +62,7 @@ function createEl(vnode, worker) {
     el = document.createElement("button");
     el.textContent = vnode.text ?? "";
     el.onclick = () => {
-      worker.postMessage({ type: "EVENT", name: vnode.event, payload: {} });
+      worker.postMessage({ type: MSG.EVENT, name: vnode.event, payload: {} });
     };
   } else {
     el = document.createElement("div");
@@ -137,7 +150,7 @@ function patch(oldVnode, newVnode, worker) {
       el.textContent = newVnode.text ?? "";
     }
     el.onclick = () => {
-      worker.postMessage({ type: "EVENT", name: newVnode.event, payload: {} });
+      worker.postMessage({ type: MSG.EVENT, name: newVnode.event, payload: {} });
     };
 
     patchProps(el, oldVnode.props || {}, newVnode.props || {});
