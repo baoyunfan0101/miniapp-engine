@@ -1,0 +1,16 @@
+// src/shared/protocol.js
+
+export const MSG = {
+  EXECUTE_APP: "EXECUTE_APP",
+  EVENT: "EVENT",
+  RENDER: "RENDER",
+  ERROR: "ERROR",
+};
+
+export const ERR = {
+  LOAD_FAIL: "LOAD_FAIL",
+  RUN_FAIL: "RUN_FAIL",
+  COMPILE_FAIL: "COMPILE_FAIL",
+  RENDER_FAIL: "RENDER_FAIL",
+  PROTOCOL_FAIL: "PROTOCOL_FAIL",
+};

@@ -1,5 +1,19 @@
 // src/worker.js
 
+import { MSG, ERR } from "./shared/protocol.js";
+import { compile, renderAST } from "./compiler/index.js";
+
+/* Error reporter */
+function reportError(err, code, meta) {
+  postMessage({
+    type: MSG.ERROR,
+    code,
+    message: err?.message ? `[${code}] ${err.message}` : `[${code}] ${String(err)}`,
+    stack: err?.stack ?? "",
+    meta: meta ?? {},
+  });
+}
+
 /* Module loader */
 // cache loaded modules to avoid duplicate and concurrent imports
 const moduleCache = new Map();
@@ -11,7 +25,7 @@ async function loadModule(specifier, referrer) {
 
   if (moduleCache.has(url)) return moduleCache.get(url);
 
-  const p = import(url);
+  const p = import(/* @vite-ignore */ url);
 
   moduleCache.set(url, p);
   return p;
@@ -22,8 +36,20 @@ let appRuntime = null;
 
 function createRuntime() {
   const runtime = {
+    template: "",
+    ast: null,
     data: {},
     handlers: new Map(),
+
+    setTemplate(tpl) {
+      try {
+        runtime.template = String(tpl ?? "");
+        runtime.ast = compile(runtime.template);
+      } catch (err) {
+        reportError(err, ERR.COMPILE_FAIL, { phase: "COMPILE" });
+        runtime.ast = null;
+      }
+    },
 
     setData(patch) {
       // merge new values into a new object
@@ -36,47 +62,24 @@ function createRuntime() {
     },
 
     render() {
-      const tree = {
-        type: "view",
-        props: { class: "root" },
-        children: [
-          {
-            type: "text",
-            value: `count = ${runtime.data.count}`,
-          },
-          {
-            type: "button",
-            props: { class: "btn" },
-            event: "inc",
-            text: "++",
-          },
-        ],
-      };
-
-      postMessage({ type: "RENDER", tree });
+      try {
+        if (!runtime.ast) throw new Error("Template not set");
+        const tree = renderAST(runtime.ast, runtime.data);
+        postMessage({ type: MSG.RENDER, tree });
+      } catch (err) {
+        reportError(err, ERR.RENDER_FAIL, { phase: "RENDER" });
+      }
     },
   };
 
   return runtime;
 }
 
-/* Error reporter */
-// phase: "LOAD_FAIL" | "RUN_FAIL"
-function reportError(err, phase) {
-  const message = (err && err.message) ? `[${phase}] ${err.message}` : `[${phase}] ${String(err)}`;
-
-  postMessage({
-    type: "ERROR",
-    message,
-    stack: err && err.stack ? err.stack : "",
-  });
-}
-
 /* Message handler */
 onmessage = async (e) => {
   const msg = e.data;
 
-  if (msg.type === "EXECUTE_APP") {
+  if (msg.type === MSG.EXECUTE_APP) {
     try {
       const mod = await loadModule(msg.entry, self.location.href);
 
@@ -84,21 +87,21 @@ onmessage = async (e) => {
         appRuntime = createRuntime();
         mod.createApp(appRuntime);
       } catch (err) {
-        reportError(err, "RUN_FAIL");
+        reportError(err, ERR.RUN_FAIL, { phase: "CREATE_APP" });
       }
     } catch (err) {
-      reportError(err, "LOAD_FAIL");
+      reportError(err, ERR.LOAD_FAIL, { phase: "LOAD_MODULE" });
     }
   }
 
-  if (msg.type === "EVENT") {
+  if (msg.type === MSG.EVENT) {
     if (!appRuntime) return;
 
     try {
       const handler = appRuntime.handlers.get(msg.name);
       if (handler) handler(msg.payload);
     } catch (err) {
-      reportError(err, "RUN_FAIL");
+      reportError(err, ERR.RUN_FAIL, { phase: "EVENT_HANDLER", event: msg.name });
     }
   }
 };
