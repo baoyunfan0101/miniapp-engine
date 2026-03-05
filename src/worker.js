@@ -1,7 +1,8 @@
 // src/worker.js
 
 import { MSG, ERR } from "./shared/protocol.js";
-import { compile, renderAST } from "./compiler/index.js";
+import { compile } from "./compiler/index.js";
+import { evaluate } from "./runtime/evaluate.js";
 
 /* Error reporter */
 function reportError(err, code, meta) {
@@ -37,17 +38,17 @@ let appRuntime = null;
 function createRuntime() {
   const runtime = {
     template: "",
-    ast: null,
+    ir: null,
     data: {},
     handlers: new Map(),
 
     setTemplate(tpl) {
       try {
         runtime.template = String(tpl ?? "");
-        runtime.ast = compile(runtime.template);
+        runtime.ir = compile(runtime.template);
       } catch (err) {
         reportError(err, ERR.COMPILE_FAIL, { phase: "COMPILE" });
-        runtime.ast = null;
+        runtime.ir = null;
       }
     },
 
@@ -63,8 +64,16 @@ function createRuntime() {
 
     render() {
       try {
-        if (!runtime.ast) throw new Error("Template not set");
-        const tree = renderAST(runtime.ast, runtime.data);
+        if (!runtime.ir) throw new Error("Template not set");
+
+        let tree;
+        try {
+          tree = evaluate(runtime.ir, runtime.data);
+        } catch (err) {
+          reportError(err, ERR.EVALUATE_FAIL, { phase: "EVALUATE" });
+          return;
+        }
+
         postMessage({ type: MSG.RENDER, tree });
       } catch (err) {
         reportError(err, ERR.RENDER_FAIL, { phase: "RENDER" });
