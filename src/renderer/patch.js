@@ -1,37 +1,49 @@
-// src/renderer/patch.js
-// Update DOM: old vnode -> new vnode
+/**
+ * src/renderer/patch.js
+ * old vnode -> new vnode
+ */
 
 import { mount } from "./mount.js";
-import { patchProps, bindEvents } from "./dom.js";
+import { patchProps, bindEvents, normalizeChildren } from "./dom.js";
 
 /**
- * Patch old vnode to match new vnode (in-place).
+ * Replace one old vnode subtree with a new vnode subtree.
  * @param {object} oldVnode
  * @param {object} newVnode
  * @param {Worker} worker
+ * @returns {void}
+ */
+function replaceNode(oldVnode, newVnode, worker) {
+  const parent = oldVnode?.el?.parentNode;
+  if (!parent) {
+    return;
+  }
+
+  const anchor = oldVnode.el.nextSibling;
+  oldVnode.el.remove();
+
+  mount(newVnode, parent, worker);
+
+  if (newVnode?.el && anchor) {
+    parent.insertBefore(newVnode.el, anchor);
+  }
+}
+
+/**
+ * Patch one old vnode so that it matches the new vnode.
+ * @param {object} oldVnode
+ * @param {object} newVnode
+ * @param {Worker} worker
+ * @returns {void}
  */
 export function patch(oldVnode, newVnode, worker) {
-  // if the type of the node has changed, re-mount the whole subtree
-  // considering the case that newVnode.type === "view"
   if (oldVnode.type !== newVnode.type) {
-    // record the parent and new sibling of the old node
-    const parent = oldVnode.el.parentNode;
-    if (!parent) return;
-    const anchor = oldVnode.el.nextSibling;
-    oldVnode.el.remove();
-
-    // mount the whole subtree to a temporary container
-    const temp = document.createDocumentFragment();
-    mount(newVnode, temp, worker);
-
-    // mount the new node to the correct position
-    parent.insertBefore(temp, anchor);
+    replaceNode(oldVnode, newVnode, worker);
     return;
   }
 
   const el = (newVnode.el = oldVnode.el);
 
-  // #text (innerHTML)
   if (newVnode.type === "#text") {
     if (oldVnode.value !== newVnode.value) {
       el.nodeValue = newVnode.value ?? "";
@@ -39,29 +51,23 @@ export function patch(oldVnode, newVnode, worker) {
     return;
   }
 
-  // update props
   patchProps(el, oldVnode.props || {}, newVnode.props || {});
+  bindEvents(el, newVnode, worker);
 
-  // update children
-  const oldChildren = oldVnode.children || [];
-  const newChildren = newVnode.children || [];
+  const oldChildren = normalizeChildren(oldVnode.children);
+  const newChildren = normalizeChildren(newVnode.children);
 
-  const commonLen = Math.min(oldChildren.length, newChildren.length);
+  const commonLength = Math.min(oldChildren.length, newChildren.length);
 
-  for (let i = 0; i < commonLen; i++) {
+  for (let i = 0; i < commonLength; i++) {
     patch(oldChildren[i], newChildren[i], worker);
   }
 
-  for (let i = commonLen; i < newChildren.length; i++) {
+  for (let i = commonLength; i < newChildren.length; i++) {
     mount(newChildren[i], el, worker);
   }
 
-  for (let i = commonLen; i < oldChildren.length; i++) {
-    oldChildren[i].el.remove();
+  for (let i = commonLength; i < oldChildren.length; i++) {
+    oldChildren[i].el?.remove();
   }
-
-  // re-bind events for button
-  if (newVnode.type === "button") bindEvents(el, newVnode, worker);
-
-  return;
 }

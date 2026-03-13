@@ -2,7 +2,6 @@
 
 import { MSG, ERR } from "./shared/protocol.js";
 import { compile } from "./compiler/index.js";
-import { evaluate } from "./runtime/evaluate.js";
 
 /* Error reporter */
 function reportError(err, code, meta) {
@@ -38,17 +37,17 @@ let appRuntime = null;
 function createRuntime() {
   const runtime = {
     template: "",
-    ir: null,
+    compiled: null,
     data: {},
     handlers: new Map(),
 
     setTemplate(tpl) {
       try {
         runtime.template = String(tpl ?? "");
-        runtime.ir = compile(runtime.template);
+        runtime.compiled = compile(runtime.template);
       } catch (err) {
         reportError(err, ERR.COMPILE_FAIL, { phase: "COMPILE" });
-        runtime.ir = null;
+        runtime.compiled = null;
       }
     },
 
@@ -64,11 +63,11 @@ function createRuntime() {
 
     render() {
       try {
-        if (!runtime.ir) throw new Error("Template not set");
+        if (!runtime.compiled) throw new Error("Template not set");
 
         let tree;
         try {
-          tree = evaluate(runtime.ir, runtime.data);
+          tree = runtime.compiled.render(runtime.data);
         } catch (err) {
           reportError(err, ERR.EVALUATE_FAIL, { phase: "EVALUATE" });
           return;

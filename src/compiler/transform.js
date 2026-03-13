@@ -1,157 +1,234 @@
-// src/compiler/transform.js
-// AST -> Intermediate Representation (IR)
-
-import { compileExpr, normalizeExpr } from "./expression.js";
-
 /**
- * Text parts:
- * - { kind: "static", value: string }
- * - { kind: "expr", expr: string, fn: (scope)=>any }
+ * src/compiler/transform.js
+ * AST -> IR
  *
- * Transformed nodes:
+ * IR node shapes:
+ * - Root:
+ *   { kind: "root", children: IrNode[] }
+ *
  * - Element:
  *   {
  *     kind: "element",
- *     tag,
- *     props,
- *     directives?: { cond?: { kind, expr, fn } },
- *     children: Node[]
+ *     tag: string,
+ *     component: boolean,
+ *     props: Array<
+ *       { kind: "static", name: string, value: any } |
+ *       { kind: "dynamic", name: string, expr: string }
+ *     >,
+ *     event: null | { name: string, handler: string },
+ *     directives: Array<
+ *       { name: "if" | "elif" | "else", expr?: string } |
+ *       { name: string, arg?: string | null, expr?: string | null }
+ *     >,
+ *     children: IrNode[]
  *   }
  *
  * - Text:
  *   {
  *     kind: "text",
- *     parts: Part[]
+ *     parts: Array<
+ *       { kind: "static", value: string } |
+ *       { kind: "expr", expr: string }
+ *     >
  *   }
  */
 
-// DSL directive definitions
-const COND_ATTRS = {
-  "tt:if": "if",
-  "tt:elif": "elif",
-  "tt:else": "else",
-};
+import { normalizeExpr } from "./expression.js";
 
-/* "a={{count+1}}" -> [{kind: "static", ...}, {kind: "expr", ...}] */
-export function splitTextParts(text) {
-  const s = String(text ?? "");
-  const parts = [];
-
-  // non-greedy match for {{ ... }}
-  const re = /\{\{\s*([\s\S]*?)\s*\}\}/g;
-
-  let lastIndex = 0;
-  let m;
-
-  while ((m = re.exec(s))) {
-    const start = m.index;
-    const end = re.lastIndex;
-
-    // static before expression
-    if (start > lastIndex) {
-      const staticText = s.slice(lastIndex, start);
-      if (staticText) parts.push({ kind: "static", value: staticText });
-    }
-
-    const rawExpr = m[1]; // inside {{ }}
-    const expr = normalizeExpr(rawExpr); // trims
-
-    parts.push({
-      kind: "expr",
-      expr,
-      fn: compileExpr(expr),
-    });
-
-    lastIndex = end;
-  }
-
-  // trailing static
-  if (lastIndex < s.length) {
-    const staticText = s.slice(lastIndex);
-    if (staticText) parts.push({ kind: "static", value: staticText });
-  }
-
-  // if no mustache matched, keep it as one static part
-  if (parts.length === 0) {
-    parts.push({ kind: "static", value: s });
-  }
-
-  return parts;
-}
-
-/* tt:if -> directives.cond (kind: "if")
- * Accepts both:
- * - tt:if="{{count > 0}}"
- * - tt:if="count > 0"
+/**
+ * Determine whether a tag should be treated as a custom component.
+ * Current rule:
+ * - built-in tags: view / text / button
+ * - others: component
+ * @param {string} tag
+ * @returns {boolean}
  */
-function extractDirectivesFromProps(props) {
-  const outProps = { ...props };
-  const directives = {};
-
-  for (const attr in COND_ATTRS) {
-    if (outProps[attr] != null) {
-      const kind = COND_ATTRS[attr];
-      const raw = outProps[attr];
-
-      delete outProps[attr];
-
-      if (kind === "else") {
-        directives.cond = { kind: "else" };
-      } else {
-        const expr = normalizeExpr(raw);
-        const fn = compileExpr(expr);
-
-        directives.cond = {
-          kind,
-          expr,
-          fn,
-        };
-      }
-
-      // Only one of conditional directives is allowed per element
-      break;
-    }
-  }
-
-  return { props: outProps, directives };
+function isComponentTag(tag) {
+  return !["view", "text", "button"].includes(tag);
 }
 
 /**
- * Transform AST to IR
- * @param {object} node AST node from parse()
- * @returns {object} transformed node
+ * Normalize one AST prop node into IR buckets.
+ * @param {object} prop
+ * @param {Array<object>} outProps
+ * @param {{ current: object | null }} eventRef
+ * @param {Array<object>} directives
+ */
+function normalizePropNode(prop, outProps, eventRef, directives) {
+  if (!prop) return;
+
+  if (prop.kind === "attr") {
+    outProps.push({
+      kind: "static",
+      name: prop.name,
+      value: prop.value,
+    });
+    return;
+  }
+
+  if (prop.kind !== "directive") {
+    throw new Error(`Unknown AST prop kind: ${prop.kind}`);
+  }
+
+  if (prop.name === "bind") {
+    outProps.push({
+      kind: "dynamic",
+      name: prop.arg,
+      expr: normalizeExpr(prop.exp),
+    });
+    return;
+  }
+
+  if (prop.name === "on") {
+    eventRef.current = {
+      name: prop.arg,
+      handler: String(prop.exp ?? ""),
+    };
+    return;
+  }
+
+  if (prop.name === "if" || prop.name === "elif") {
+    directives.push({
+      name: prop.name,
+      expr: normalizeExpr(prop.exp),
+    });
+    return;
+  }
+
+  if (prop.name === "else") {
+    directives.push({
+      name: "else",
+    });
+    return;
+  }
+
+  // keep unknown directives as structured metadata.
+  directives.push({
+    name: prop.name,
+    arg: prop.arg ?? null,
+    expr: prop.exp ?? null,
+  });
+}
+
+/**
+ * Merge adjacent text-like AST nodes into one IR text node.
+ * Example:
+ *   [text("a "), interp("b"), text(" c")]
+ * -> text(parts=[static("a "), expr("b"), static(" c")])
+ * @param {object[]} nodes
+ * @param {number} start
+ * @returns {{ node: object, nextIndex: number }}
+ */
+function mergeTextLikeNodes(nodes, start) {
+  const parts = [];
+  let i = start;
+
+  while (i < nodes.length) {
+    const node = nodes[i];
+
+    if (node.kind === "text") {
+      parts.push({
+        kind: "static",
+        value: node.content,
+      });
+      i++;
+      continue;
+    }
+
+    if (node.kind === "interp") {
+      parts.push({
+        kind: "expr",
+        expr: normalizeExpr(node.content),
+      });
+      i++;
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    node: {
+      kind: "text",
+      parts,
+    },
+    nextIndex: i,
+  };
+}
+
+/**
+ * Transform semantic AST children into codegen-ready IR children.
+ * Adjacent text / interpolation nodes are merged here.
+ * @param {object[]} children
+ * @returns {object[]}
+ */
+function transformChildren(children) {
+  const out = [];
+  const list = children || [];
+
+  for (let i = 0; i < list.length; ) {
+    const node = list[i];
+
+    if (node.kind === "text" || node.kind === "interp") {
+      const merged = mergeTextLikeNodes(list, i);
+      out.push(merged.node);
+      i = merged.nextIndex;
+      continue;
+    }
+
+    out.push(transform(node));
+    i++;
+  }
+
+  return out.filter(Boolean);
+}
+
+/**
+ * Transform a semantic AST node into a codegen-ready IR node.
+ * @param {object} node
+ * @returns {object | null}
  */
 export function transform(node) {
   if (!node) return null;
 
+  if (node.kind === "root") {
+    return {
+      kind: "root",
+      children: transformChildren(node.children || []),
+    };
+  }
+
   if (node.kind === "text") {
     return {
       kind: "text",
-      parts: splitTextParts(node.value),
+      parts: [{ kind: "static", value: node.content }],
+    };
+  }
+
+  if (node.kind === "interp") {
+    return {
+      kind: "text",
+      parts: [{ kind: "expr", expr: normalizeExpr(node.content) }],
     };
   }
 
   if (node.kind === "element") {
-    const { props, directives } = extractDirectivesFromProps(node.props || {});
-    const children = (node.children || []).map(transform).filter(Boolean);
+    const props = [];
+    const directives = [];
+    const eventRef = { current: null };
 
-    const out = {
+    for (const prop of node.props || []) {
+      normalizePropNode(prop, props, eventRef, directives);
+    }
+
+    return {
       kind: "element",
       tag: node.tag,
+      component: isComponentTag(node.tag),
       props,
-      children,
-    };
-
-    if (directives.cond) out.directives = directives;
-
-    return out;
-  }
-
-  // root node is not expected as input here
-  if (node.kind === "root") {
-    return {
-      kind: "root",
-      children: (node.children || []).map(transform).filter(Boolean),
+      event: eventRef.current,
+      directives,
+      children: transformChildren(node.children || []),
     };
   }
 
