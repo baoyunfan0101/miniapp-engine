@@ -1,22 +1,24 @@
-// src/compiler/expression.js
-// Expression string -> fn(scope) => value
-// scope: { data, ...data, item, index, ... }
-
-const exprCache = new Map();
+/**
+ * src/compiler/expression.js
+ * Expression string -> JavaScript source string
+ */
 
 /**
- * Normalize expr: strip surrounding {{ }} if present.
+ * Normalize an expression string.
+ * If the input is wrapped by {{ }}, unwrap it.
  * @param {string} raw
  * @returns {string}
  */
 export function normalizeExpr(raw) {
-  const s = String(raw ?? "");
-  const m = s.match(/^\s*\{\{\s*([\s\S]+?)\s*\}\}\s*$/);
-  return (m ? m[1] : s).trim();
+  const source = String(raw ?? "");
+  const match = source.match(/^\s*\{\{\s*([\s\S]+?)\s*\}\}\s*$/);
+  return (match ? match[1] : source).trim();
 }
 
 /**
- * Safety belt: basic checks to prevent obviously unsafe expressions.
+ * Assert that an expression is safe to embed in generated render code.
+ * This is a minimal safety layer for template expressions.
+ * @param {string} expr
  */
 function assertSafeExpr(expr) {
   // Disallow statements / declarations and obvious dangerous globals.
@@ -32,36 +34,20 @@ function assertSafeExpr(expr) {
 }
 
 /**
- * Compile expr -> function(scope) { with(scope) return (expr) }
- * @param {string} rawExpr expression string, can be "count>0" or "{{count>0}}"
- * @returns {(scope: any) => any}
+ * Generate a safe JavaScript expression source string.
+ * Example:
+ *   "count + 1" -> "(count + 1)"
+ *   "{{ count + 1 }}" -> "(count + 1)"
+ * @param {string} rawExpr
+ * @returns {string}
  */
-export function compileExpr(rawExpr) {
+export function genExprSource(rawExpr) {
   const expr = normalizeExpr(rawExpr);
+
   if (!expr) {
-    // Empty expression returns undefined
-    return () => undefined;
+    return "undefined";
   }
 
-  if (exprCache.has(expr)) return exprCache.get(expr);
-
   assertSafeExpr(expr);
-
-  // Using `with` allows `count` to resolve to scope.count (like Vue2).
-  const fn = new Function(
-    "scope",
-    `
-      try {
-        with (scope) {
-          return (${expr});
-        }
-      } catch (e) {
-        // Re-throw with better context
-        throw new Error("ExprError: " + ${JSON.stringify(expr)} + " -> " + e.message);
-      }
-    `
-  );
-
-  exprCache.set(expr, fn);
-  return fn;
+  return `(${expr})`;
 }
